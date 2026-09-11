@@ -63,7 +63,7 @@ TELEGRAM_TOKEN = "8899234089:AAELjZQ1Q559YNar5oo10Bhi6Ceo2wrbImY"
 # এখানে আপনার ও অন্য এডমিনদের টেলিগ্রাম নিউমেরিক আইডি দিন
 ADMIN_IDS = [6805684286] 
 
-login_url, ob, version = "https://loginbp.ggpolarbear.com/", "OB54", "1.126.4"
+login_url, ob, version = "https://loginbp.ggpolarbear.com/", "OB54", "1.130.22"
 TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 # সর্বোচ্চ ফিক্সড সেশন সময়সীমা (কঠোরভাবে ৫ মিনিট)
@@ -517,7 +517,7 @@ async def EncRypTMajoRLoGin(open_id, access_token):
     msg.event_time = str(datetime.now())[:-7]
     msg.game_name = "free fire"
     msg.platform_id = 2
-    msg.client_version = "1.126.4"
+    msg.client_version = "1.130.22"
     msg.client_version_code = "2024010012"
     msg.system_software = "Android OS 11 / API-30 (RQ3A.210805.001)"
     msg.system_hardware = "Handheld"
