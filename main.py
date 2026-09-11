@@ -1,4 +1,5 @@
 import os
+import sys
 import ssl
 import json
 import time
@@ -7,7 +8,7 @@ import asyncio
 from datetime import datetime
 import aiohttp
 
-# ========== 1. CRITICAL TIMEZONE PATCH (PREVENTS APSCHEDULER CRASH) ==========
+# ========== 1. CRITICAL TIMEZONE PATCH ==========
 import pytz
 try:
     import tzlocal
@@ -36,7 +37,7 @@ except Exception:
 # ========== 2. CRYPTO & TELEGRAM IMPORTS ==========
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from protobuf_decoder.protobuf_decoder import Parser
@@ -57,12 +58,19 @@ C_RESET = "\033[0m"
 BOLD = "\033[1m"
 
 # ========== CONFIGURATION ==========
-TELEGRAM_TOKEN = "8330689394:AAHR064_FrDMnDGhFOnWxowJydANDClZ9mY"
+TELEGRAM_TOKEN = "8899234089:AAELjZQ1Q559YNar5oo10Bhi6Ceo2wrbImY"
+
+# এখানে আপনার ও অন্য এডমিনদের টেলিগ্রাম নিউমেরিক আইডি দিন
+ADMIN_IDS = [6805684286] 
+
 login_url, ob, version = "https://loginbp.ggpolarbear.com/", "OB54", "1.126.4"
 TIMEOUT = aiohttp.ClientTimeout(total=15)
 
-# সর্বোচ্চ সেশন সময়সীমা (৫ মিনিট)
+# সর্বোচ্চ ফিক্সড সেশন সময়সীমা (কঠোরভাবে ৫ মিনিট)
 MAX_SESSION_MINUTES = 5
+
+# প্রতি ৪ ঘন্টা পর পর অটো-রিস্টার্ট (সেকেন্ডে)
+AUTO_RESTART_INTERVAL = 4 * 60 * 60  # 4 Hours
 
 # গ্লোবাল ডাটাবেজ ও ক্লায়েন্ট পুল
 connected_clients_bd = {}
@@ -77,6 +85,14 @@ rr_lock = asyncio.Lock()
 # অ্যানিমেশন ফ্রেমসমূহ
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 FIRE_FRAMES = ["🔥", "⚡", "💥", "✨", "🌀", "🚀"]
+
+# ---------- ADMIN KEYBOARD GENERATOR ----------
+def get_admin_keyboard():
+    keyboard = [
+        [KeyboardButton("🔄 Restart Engine"), KeyboardButton("📊 Server Status")],
+        [KeyboardButton("🛑 Stop All Attacks"), KeyboardButton("❓ Help / Commands")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # ---------- UI & ANIMATION GENERATORS ----------
 def generate_progress_bar(percentage, length=16):
@@ -104,6 +120,7 @@ def generate_live_spam_box(uid, room_id, server, elapsed_sec, total_sec, packets
     box += f"  ⚡ Transmission Speed  :: ~25 Packets / Sec (Burst Mode)\n"
     box += f"  📦 Packets Delivered   :: {packets_sent:,} Packets\n"
     box += f"  ⏱️ Time Elapsed/Total  :: {time_str} ({rem_str} left)\n"
+    box += f"  🔒 Max Session Cap     :: Strictly {MAX_SESSION_MINUTES} Minutes\n"
     box += "╠═══════════════════════════════════════════════════════════════════╣\n"
     box += f"  🚀 PROGRESS {spinner}       :: {prog_bar}\n"
     box += "╠═══════════════════════════════════════════════════════════════════╣\n"
@@ -462,7 +479,7 @@ async def _query(uid, bot):
             return info
         return {'status': 'UNKNOWN', 'status_emoji': '❓', 'description': 'অজানা স্ট্যাটাস'}
 
-# ========== LOGIN & AUTH PROTOCOL (EXACT 100% MATCH FROM ACTIVATION.PY) ==========
+# ========== LOGIN & AUTH PROTOCOL ==========
 async def GeNeRaTeAccAccess(uid, password):
     url = "https://100067.connect.garena.com/oauth/guest/token/grant"
     headers = {
@@ -618,6 +635,16 @@ class FreeFireBot:
         self.query_lock = asyncio.Lock()
         self.last_error = "None"
 
+    async def close(self):
+        self.is_running = False
+        if self.online_writer:
+            try:
+                self.online_writer.close()
+                await self.online_writer.wait_closed()
+            except Exception: pass
+        for t in self.tasks:
+            t.cancel()
+
     async def tcp_online(self, ip, port, auth_token):
         while self.is_running:
             try:
@@ -671,7 +698,7 @@ class FreeFireBot:
     async def keep_online_forever(self):
         while self.is_running:
             try:
-                # 1. Generate Access Token (Using activation.py MSDK header)
+                # Step 1: OAuth Token
                 print(f"{C_CYAN}[AUTH]    -> [{self.uid}] Step 1: Requesting Access Token ({self.server.upper()})...{C_RESET}")
                 open_id, access_token, err = await GeNeRaTeAccAccess(self.uid, self.password)
                 if not open_id or not access_token:
@@ -680,7 +707,7 @@ class FreeFireBot:
                     await asyncio.sleep(6)
                     continue
 
-                # 2. Major Login (Using activation.py payload)
+                # Step 2: Major Login
                 print(f"{C_CYAN}[AUTH]    -> [{self.uid}] Step 2: Running MajorLogin...{C_RESET}")
                 payload = await EncRypTMajoRLoGin(open_id, access_token)
                 response, err = await MajorLogin(payload)
@@ -690,7 +717,7 @@ class FreeFireBot:
                     await asyncio.sleep(6)
                     continue
 
-                # 3. Parse Auth & Get Login Data (Exact Gateway URL parsing)
+                # Step 3: Gateway Ports
                 auth_data = MajoRLoGinrEs_pb2.MajorLoginRes()
                 auth_data.ParseFromString(response)
                 
@@ -727,7 +754,7 @@ class FreeFireBot:
                 self.online_port = int(online_port)
                 self.auth_token = auth_token
 
-                # 4. Connect Sockets
+                # Step 4: Sockets
                 print(f"{C_CYAN}[AUTH]    -> [{self.uid}] Step 4: Connecting Gateway TCP ({online_ip}:{online_port})...{C_RESET}")
                 ready = asyncio.Event()
                 t1 = asyncio.create_task(self.tcp_chat(chat_ip, chat_port, auth_token, ready))
@@ -799,9 +826,11 @@ async def find_player_and_server(uid):
     if best_idx != -1: return servers[best_idx], bots[best_idx], results[best_idx]
     return None, None, None
 
-# ========== 5-MINUTE ANIMATED SPAM WORKER ==========
+# ========== 5-MINUTE STRICT SPAM WORKER ==========
 async def run_room_spam_loop(uid, server, bot, status_result, duration_minutes, update: Update, sent_msg, user_name):
     start_time = time.time()
+    # কঠোরভাবে সর্বোচ্চ ৫ মিনিট (300 সেকেন্ড) ক্যাপড
+    duration_minutes = min(duration_minutes, MAX_SESSION_MINUTES)
     total_seconds = duration_minutes * 60
     room_id = status_result['details']['room_id']
     
@@ -824,14 +853,14 @@ async def run_room_spam_loop(uid, server, bot, status_result, duration_minutes, 
                     pass
                 last_ui_update = time.time()
 
-            # সক্রিয় সেশন রিকভারি
+            # সকেট কানেকশন ব্যাকআপ
             if not active_bot.is_online or not active_bot.online_writer:
                 fallback = await get_load_balanced_bot(server)
                 if not fallback:
                     await asyncio.sleep(1.0); continue
                 active_bot = fallback
 
-            # উচ্চগতির প্যাকেট ট্রান্সমিশন বার্স্ট (Burst Mode)
+            # বার্স্ট মোড প্যাকেট ট্রান্সমিশন
             for _ in range(5):
                 if time.time() - start_time >= total_seconds:
                     break
@@ -861,7 +890,7 @@ async def run_room_spam_loop(uid, server, bot, status_result, duration_minutes, 
                 except Exception: pass
                 await asyncio.sleep(0.08)
 
-        # ৫ মিনিট পূর্ণ হলে সমাপ্তি বক্স প্রদর্শন
+        # ৫ মিনিট সম্পন্ন হলে ফিনিশিং বক্স
         final_box = generate_completed_spam_box(uid, room_id, server, packets_sent, duration_minutes, user_name)
         await sent_msg.edit_text(final_box, parse_mode="Markdown")
 
@@ -873,19 +902,45 @@ async def run_room_spam_loop(uid, server, bot, status_result, duration_minutes, 
     finally:
         active_spam_tasks.pop(str(uid), None)
 
+# ========== SYSTEM RESTART FUNCTION ==========
+def restart_program():
+    """সম্পূর্ণ পাইথন স্ক্রিপ্টটিকে ক্লিন রিস্টার্ট দেয়"""
+    print(f"\n{BOLD}{C_RED}🔄 RESTARTING SYSTEM NOW...{C_RESET}")
+    # সকল অ্যাক্টিভ টাস্ক ও সকেট বন্ধ করা
+    for task in active_spam_tasks.values():
+        task.cancel()
+    # পাইথন প্রসেস রিস্টার্ট
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
 # ========== TELEGRAM HANDLERS ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    is_admin = user_id in ADMIN_IDS
+
     text = (
         "🔥 WELCOME TO WINTER ARIYAN BOT 🔥\n\n"
         f"📌 Version: {ob} - {version}\n"
-        "⚡ Unlimited Concurrent Engine (No Waiting Cooldown)\n\n"
+        f"⏱️ সেশন সীমা: প্রতিবারে সর্বোচ্চ {MAX_SESSION_MINUTES} মিনিট\n"
+        "⚡ মাল্টি-ইউজার: আনলিমিটেড ইউজার একসাথে চালাতে পারবে!\n\n"
         "👉 `/status` – চেক সক্রিয় সার্ভার বটসমূহ\n"
         "👉 `/status <UID>` – প্লেয়ার লাইভ ইন-গেম স্ট্যাটাস\n"
-        "👉 `/room <UID>` – সর্বোচ্চ ৫ মিনিটের লাইভ অ্যানিমেটেড স্প্যাম\n"
-        "👉 `/stop <UID>` – নির্দিষ্ট UID-এর স্প্যাম বন্ধ করুন\n\n"
-        "💡 নিয়ম: আনলিমিটেড ব্যবহার করতে পারবেন। যেকোনো UID দিয়ে রান করলে সর্বোচ্চ ৫ মিনিট লাইভ চলবে!"
+        "👉 `/room <UID>` – কাস্টম রুমে ৫ মিনিটের লাইভ স্প্যাম\n"
+        "👉 `/stop <UID>` – নির্দিষ্ট UID-এর স্প্যাম বন্ধ করুন\n"
     )
-    await update.effective_message.reply_text(boxed(text, " ARIYAN BOT "), parse_mode='Markdown')
+    
+    if is_admin:
+        text += "\n👑 *ADMIN MODE ACTIVATED*\nআপনার জন্য নিচে কুইক বাটন যুক্ত করা হয়েছে।"
+        await update.effective_message.reply_text(
+            boxed(text, " ARIYAN BOT (ADMIN) "), 
+            parse_mode='Markdown',
+            reply_markup=get_admin_keyboard()
+        )
+    else:
+        await update.effective_message.reply_text(
+            boxed(text, " ARIYAN BOT "), 
+            parse_mode='Markdown',
+            reply_markup=ReplyKeyboardRemove()
+        )
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
@@ -909,13 +964,14 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🇧🇩 BD Active Online  : {bd_online}/{total_bd}\n"
         f"🇮🇳 IND Active Online : {ind_online}/{total_ind}\n\n"
         f"⚡ Active Tasks Running: {len(active_spam_tasks)}\n"
-        f"🚀 Multi-User Parallel Pool: UNLIMITED READY"
+        f"⏱️ Session Rule       : Max {MAX_SESSION_MINUTES} Mins per run\n"
+        f"🚀 Concurrency Pool   : UNLIMITED PARALLEL"
     )
     await update.effective_message.reply_text(boxed(status_text, " BOT STATUS "), parse_mode='Markdown')
 
 async def room_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.effective_message.reply_text("❌ ব্যবহার বিধি: `/room <UID>`\nউদাহরণ: `/room 5411923563`")
+        await update.effective_message.reply_text("❌ ব্যবহার বিধি: `/room <UID>`\nউদাহরণ: `/room 5411923563`\n(নোট: প্রতিবার সর্বোচ্চ ৫ মিনিট চলবে)")
         return
         
     uid = context.args[0].strip()
@@ -925,10 +981,8 @@ async def room_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     user_name = update.effective_user.username or update.effective_user.first_name or "Player"
     
+    # কঠোরভাবে ৫ মিনিট ফিক্সড রাখা হয়েছে
     duration = MAX_SESSION_MINUTES
-    if len(context.args) > 1 and context.args[1].isdigit():
-        req_dur = int(context.args[1])
-        duration = min(req_dur, MAX_SESSION_MINUTES)
         
     if str(uid) in active_spam_tasks:
         await update.effective_message.reply_text(f"⚠️ টার্গেট `{uid}` এর ওপর অলরেডি একটি স্প্যাম সেশন লাইভ চলছে!\nবন্ধ করতে `/stop {uid}` লিখুন।")
@@ -964,19 +1018,57 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.effective_message.reply_text(f"❌ টার্গেট `{uid}` এর ওপর কোনো স্প্যামিং সচল নেই!")
 
+async def restart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.effective_message.reply_text("⛔ আপনি এই কমান্ড ব্যবহারের অনুমতিপ্রাপ্ত নন!")
+        return
+    
+    await update.effective_message.reply_text("🔄 বট রিস্টার্ট হচ্ছে... অনুগ্রহ করে ১০-১৫ সেকেন্ড অপেক্ষা করুন।")
+    await asyncio.sleep(1)
+    restart_program()
+
+# ========== TEXT & BUTTON MESSAGE HANDLER ==========
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.effective_message.text.strip()
-    if not text.isdigit():
-        await update.effective_message.reply_text("❌ অনুগ্রহ করে সঠিক সংখ্যামূলক UID পাঠান বা /room <UID> কমান্ড ব্যবহার করুন।")
+    user_id = update.effective_user.id
+    is_admin = user_id in ADMIN_IDS
+
+    # এডমিন বাটন ইন্টারঅ্যাকশন
+    if is_admin and text == "🔄 Restart Engine":
+        await update.effective_message.reply_text("🔄 সমস্ত কানেকশন বন্ধ করে ইঞ্জিন পুনরায় চালু (Restart) করা হচ্ছে...")
+        await asyncio.sleep(1)
+        restart_program()
+        return
+        
+    elif is_admin and text == "🛑 Stop All Attacks":
+        count = len(active_spam_tasks)
+        for t in list(active_spam_tasks.values()):
+            t.cancel()
+        active_spam_tasks.clear()
+        await update.effective_message.reply_text(f"🛑 এক ক্লিকে মোট {count} টি অ্যাক্টিভ স্প্যাম বন্ধ করা হয়েছে।")
         return
 
-    sent_msg = await update.effective_message.reply_text("🔍 বাংলাদেশ ও ইন্ডিয়া উভয় সার্ভারে চেক করা হচ্ছে...")
-    server, bot, result = await find_player_and_server(text)
-    if server and result:
-        box_text = generate_styled_box(text, result)
-        await sent_msg.edit_text(f"🟢 Server: `{server.upper()}`\n\n```\n{box_text}\n```", parse_mode="Markdown")
-    else:
-        await sent_msg.edit_text("❌ কোনো সার্ভার থেকেই প্লেয়ারের তথ্য পাওয়া যায়নি!")
+    elif text == "📊 Server Status":
+        await status_cmd(update, context)
+        return
+
+    elif text == "❓ Help / Commands":
+        await start(update, context)
+        return
+
+    # UID দিয়ে সরাসরি কুয়েরি চেক
+    if text.isdigit():
+        sent_msg = await update.effective_message.reply_text("🔍 বাংলাদেশ ও ইন্ডিয়া উভয় সার্ভারে চেক করা হচ্ছে...")
+        server, bot, result = await find_player_and_server(text)
+        if server and result:
+            box_text = generate_styled_box(text, result)
+            await sent_msg.edit_text(f"🟢 Server: `{server.upper()}`\n\n```\n{box_text}\n```", parse_mode="Markdown")
+        else:
+            await sent_msg.edit_text("❌ কোনো সার্ভার থেকেই প্লেয়ারের তথ্য পাওয়া যায়নি!")
+        return
+
+    await update.effective_message.reply_text("❌ অনুগ্রহ করে সঠিক সংখ্যামূলক UID পাঠান বা /room <UID> কমান্ড ব্যবহার করুন।")
 
 # ========== 3. SMOOTH BACKGROUND BOT LOADER ==========
 async def load_and_start():
@@ -1024,7 +1116,7 @@ async def load_and_start():
     except Exception as e:
         print(f"{C_RED}⚠️ Error loading ind.txt: {e}{C_RESET}")
 
-    # ডায়াগনস্টিক রিপোর্ট প্রিন্টার (প্রতি ৩০ সেকেন্ড পর পর সামারি দেখাবে)
+    # ডায়াগনস্টিক রিপোর্ট প্রিন্টার (প্রতি ৩০ সেকেন্ড)
     async def periodic_status_logger():
         while True:
             await asyncio.sleep(30)
@@ -1041,9 +1133,16 @@ async def load_and_start():
                     print(f"     • UID: {b.uid} ({b.server.upper()}) -> Reason: {C_RED}{b.last_error}{C_RESET}")
             print(f"{C_MAGENTA}───────────────────────────────────────────────────────{C_RESET}\n")
 
-    asyncio.create_task(periodic_status_logger())
+    # প্রতি ৪ ঘন্টা পর পর স্বয়ংক্রিয় অটো-রিস্টার্ট শিডিউলার
+    async def auto_restart_scheduler():
+        await asyncio.sleep(AUTO_RESTART_INTERVAL)
+        print(f"\n{C_RED}[SCHEDULED] 4 Hours completed! Auto-restarting engine for clean memory & fresh socket...{C_RESET}")
+        restart_program()
 
-# ========== 4. POST INIT (INSTANT TELEGRAM BOT START) ==========
+    asyncio.create_task(periodic_status_logger())
+    asyncio.create_task(auto_restart_scheduler())
+
+# ========== 4. POST INIT ==========
 async def post_init(application: Application):
     print(f"\n{C_GREEN}🚀 Telegram Bot is now ONLINE & Listening for commands!{C_RESET}")
     asyncio.create_task(load_and_start())
@@ -1063,10 +1162,12 @@ def main():
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("room", room_cmd))
     app.add_handler(CommandHandler("stop", stop_cmd))
+    app.add_handler(CommandHandler("restart", restart_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
     
     print(f"{C_CYAN}🤖 Winter Ariyan Telegram Multi-User Engine Starting...{C_RESET}")
     print(f"📌 Release Version: {ob} - {version}")
+    print(f"⏱️ 4-Hour Auto-Restart Scheduled.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
