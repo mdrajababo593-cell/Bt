@@ -58,7 +58,7 @@ C_RESET = "\033[0m"
 BOLD = "\033[1m"
 
 # ========== CONFIGURATION ==========
-TELEGRAM_TOKEN = "8899234089:AAELjZQ1Q559YNar5oo10Bhi6Ceo2wrbImY"
+TELEGRAM_TOKEN = "8038891325:AAFNfusJm-Zkcn6joDHt6442rMJEJsRJ5u8"
 
 # এখানে আপনার ও অন্য এডমিনদের টেলিগ্রাম নিউমেরিক আইডি দিন
 ADMIN_IDS = [6805684286] 
